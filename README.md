@@ -5,14 +5,14 @@ This repository is meant to help improve ease of access to Reinforcement Learnin
 For more information see the respective papers:
 
 Rating-Based Reinforcement Learning:
- * Paper: [Rating-Based Reinforcement Learning Paper](https://ojs.aaai.org/index.php/AAAI/article/view/28886)
+ * 📄 Paper: [Rating-Based Reinforcement Learning Paper](https://ojs.aaai.org/index.php/AAAI/article/view/28886)
 
- * Code: [Rating-Based Reinforcement Learning Code](https://github.com/Dev1nW/Rating-based-Reinforcement-Learning/tree/main)
+ * 💻 Code: [Rating-Based Reinforcement Learning Code](https://github.com/Dev1nW/Rating-based-Reinforcement-Learning/tree/main)
 
 BPref: Benchmarking Preference-Based Reinforcement Learning:
- * Paper: [BPref Paper](https://openreview.net/forum?id=ps95-mkHF_)
+ * 📄 Paper: [BPref Paper](https://openreview.net/forum?id=ps95-mkHF_)
  
- * Code: [BPref Code](https://github.com/rll-research/BPref)
+ * 💻 Code: [BPref Code](https://github.com/rll-research/BPref)
 
 ## Key Features:
 
@@ -23,6 +23,12 @@ BPref: Benchmarking Preference-Based Reinforcement Learning:
 * **Custom Wrappers:** Includes custom wrappers for DeepMind Control Suite to Gymnasium and DeepMind Control Suite Vectorized Environment.
 * **Performance Visualization:** Generates videos showcasing the model's performance after training.
 * **Reward Correlation Analysis:** Calculates the correlation between predicted and actual rewards.
+
+## See it for yourself
+
+Videos like this are generated after 4,000,000 timesteps using 1,000 ratings!
+
+![Demo](Demos/video.gif)
 
 ## Installation:
 
