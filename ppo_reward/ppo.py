@@ -106,7 +106,7 @@ class PPO(OnPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         num_feedback: int = 1000,
-        update_every: int = 100000,
+        update_every: int = 16000,
         num_ratings: int = 2,
         segment_len: int = 50,
         max_ep_len: int = 1000,

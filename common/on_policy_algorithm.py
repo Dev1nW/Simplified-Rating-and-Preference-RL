@@ -7,15 +7,53 @@ import torch as th
 from gymnasium import spaces
 
 from common.base_class import BaseAlgorithm
-from common.buffers import DictRolloutBuffer, RolloutBuffer
+from common.buffers import DictRolloutBuffer, RolloutBuffer, EntReplayBuffer
 from common.callbacks import BaseCallback
 from common.policies import ActorCriticPolicy
 from common.type_aliases import GymEnv, MaybeCallback, Schedule
 from common.utils import obs_as_tensor, safe_mean
 from common.vec_env import VecEnv
 from scipy.stats import pearsonr
+import torch
 
 SelfOnPolicyAlgorithm = TypeVar("SelfOnPolicyAlgorithm", bound="OnPolicyAlgorithm")
+
+def update_mean_var_count_from_moments(
+    mean, var, count, batch_mean, batch_var, batch_count
+):
+    delta = batch_mean - mean
+    tot_count = count + batch_count
+
+    new_mean = mean + delta + batch_count / tot_count
+    m_a = var * count
+    m_b = batch_var * batch_count
+    M2 = m_a + m_b + torch.pow(delta, 2) * count * batch_count / tot_count
+    new_var = M2 / tot_count
+    new_count = tot_count
+
+    return new_mean, new_var, new_count
+
+class TorchRunningMeanStd:
+    def __init__(self, epsilon=1e-4, shape=(), device=None):
+        self.mean = torch.zeros(shape, device=device)
+        self.var = torch.ones(shape, device=device)
+        self.count = epsilon
+
+    def update(self, x):
+        with torch.no_grad():
+            batch_mean = torch.mean(x, axis=0)
+            batch_var = torch.var(x, axis=0)
+            batch_count = x.shape[0]
+            self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        self.mean, self.var, self.count = update_mean_var_count_from_moments(
+            self.mean, self.var, self.count, batch_mean, batch_var, batch_count
+        )
+
+    @property
+    def std(self):
+        return torch.sqrt(self.var)
 
 
 class OnPolicyAlgorithm(BaseAlgorithm):
@@ -137,11 +175,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.total_feedback = 0
         self.label_feedback = 0
 
+        self.unsuper_step = 32000
+
         self.reward_batch = self.reward_model.mb_size
         self.segment_len = segment_len
         self.first_reward_train = 0
 
-        self.re_update = 200
+        self.re_update = 100
 
         if _init_setup_model:
             self._setup_model()
@@ -166,6 +206,18 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             n_envs=self.n_envs,
             **self.rollout_buffer_kwargs,
         )
+
+        self.unsuper_buffer = EntReplayBuffer(
+                self.unsuper_step+100,
+                self.observation_space,
+                self.action_space,
+                self.device,
+                n_envs=self.n_envs,
+                optimize_memory_usage=False,
+            )
+        
+        self.s_ent_stats = TorchRunningMeanStd(shape=[1], device=self.device)
+
         self.policy = self.policy_class( 
             self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
         )
@@ -254,7 +306,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             new_obs, rewards, done, infos = env.step(clipped_actions)
             batch_reward = rewards.reshape(-1,1,1)
-
+    
             pred_reward = self.reward_model.r_hat_batch(obsact)
             pred_reward = pred_reward.reshape(-1)
             
@@ -288,13 +340,138 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # Reset trajectories
                 self.traj_obsact, self.traj_reward, self.traj_frames_1, self.traj_frames_2 = None, None, [], []
                 
-                if  self.num_timesteps < 32000:
-                    continue
+                
                 # Train Reward
-                elif self.num_updates >= self.update_every and self.total_feedback < self.max_feedback:
+                if self.num_updates >= self.update_every and self.total_feedback < self.max_feedback:
                     print('Training Reward Predictor')
                     self.num_updates = 0
                     self.learn_reward()
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if not callback.on_step():
+                return False
+
+            self._update_info_buffer(infos, done)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+
+            # Handle timeout by bootstraping with value function
+            # see GitHub issue #633
+            for idx, done in enumerate(done):
+                if (
+                    done
+                    and infos[idx].get("terminal_observation") is not None
+                    and infos[idx].get("TimeLimit.truncated", False)
+                ):
+                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    with th.no_grad():
+                        terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
+                    pred_reward[idx] += self.gamma * terminal_value
+
+            rollout_buffer.add(
+                self._last_obs,  # type: ignore[arg-type]
+                actions,
+                pred_reward,
+                self._last_episode_starts,  # type: ignore[arg-type]
+                values,
+                log_probs,
+            )
+            self._last_obs = new_obs  # type: ignore[assignment]
+            self._last_episode_starts = done
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
+
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=done)
+
+        callback.update_locals(locals())
+
+        callback.on_rollout_end()
+
+        return True
+    
+    def collect_rollouts_unsupervised(
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        rollout_buffer: RolloutBuffer,
+        n_rollout_steps: int,
+        replay_buffer: EntReplayBuffer,
+    ) -> bool:
+        assert self._last_obs is not None, "No previous observation was provided"
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        # Sample new weights for the state dependent exploration
+        if self.use_sde:
+            self.policy.reset_noise(env.num_envs)
+
+        callback.on_rollout_start()
+
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                actions, values, log_probs = self.policy(obs_tensor)
+            actions = actions.cpu().numpy()
+
+            # Rescale and perform action
+            clipped_actions = actions
+
+            if isinstance(self.action_space, spaces.Box):
+                if self.policy.squash_output:
+                    # Unscale the actions to match env bounds
+                    # if they were previously squashed (scaled in [-1, 1])
+                    clipped_actions = self.policy.unscale_action(clipped_actions)
+                else:
+                    # Otherwise, clip the actions to avoid out of bound error
+                    # as we are sampling from an unbounded Gaussian distribution
+                    clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+            obsact = np.concatenate((self._last_obs, clipped_actions), axis=-1) 
+            obsact = np.expand_dims(obsact, axis=1) 
+
+            obs_origin = env.get_original_obs()
+            replay_buffer.add_obs(obs_origin) 
+            state_entropy = replay_buffer.compute_state_entropy(obs_origin)
+            self.s_ent_stats.update(state_entropy)
+            norm_state_entropy = state_entropy / self.s_ent_stats.std
+
+            new_obs, rewards, done, infos = env.step(clipped_actions)
+            next_obs_origin = env.get_original_obs()            
+            batch_reward = rewards.reshape(-1,1,1)
+            
+            pred_reward = norm_state_entropy.reshape(-1).data.cpu().numpy()
+
+            # Create list of all state action pairs within a trajectory 
+            if self.traj_obsact is None:
+                self.traj_obsact = obsact
+                self.traj_reward = batch_reward
+            else:
+                self.traj_obsact = np.concatenate((self.traj_obsact, obsact), axis=1)
+                self.traj_reward = np.concatenate((self.traj_reward, batch_reward), axis=1)
+
+            self.num_updates += env.num_envs
+            self.num_timesteps += env.num_envs
+
+            num_dones = int(sum(done))
+            
+            if num_dones > 0:
+                self.reward_model.add_data_batch(self.traj_obsact, self.traj_reward)
+                
+                # Reset trajectories
+                self.traj_obsact, self.traj_reward, self.traj_frames_1, self.traj_frames_2 = None, None, [], []
 
             # Give access to local variables
             callback.update_locals(locals())
@@ -399,7 +576,15 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         assert self.env is not None
 
         while self.num_timesteps < total_timesteps:
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+            if self.num_timesteps < self.unsuper_step:
+                continue_training = self.collect_rollouts_unsupervised(
+                    self.env, callback, self.rollout_buffer, 
+                    n_rollout_steps=self.n_steps, replay_buffer=self.unsuper_buffer)
+                flag=False
+            else:
+
+                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+                flag=True
 
             if not continue_training:
                 break
@@ -408,7 +593,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
 
             # Display training infos
-            if log_interval is not None and iteration % log_interval == 0:
+            if log_interval is not None and iteration % log_interval == 0 and flag:
                 assert self.ep_info_buffer is not None
                 self._dump_logs(iteration)
 

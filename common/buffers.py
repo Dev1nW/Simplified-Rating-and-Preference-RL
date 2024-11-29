@@ -839,3 +839,111 @@ class DictRolloutBuffer(RolloutBuffer):
             advantages=self.to_torch(self.advantages[batch_inds].flatten()),
             returns=self.to_torch(self.returns[batch_inds].flatten()),
         )
+
+class EntReplayBuffer(BaseBuffer):
+    """
+    Replay buffer used in off-policy algorithms like SAC/TD3.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device:
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Enable a memory efficient variant
+        of the replay buffer which reduces by almost a factor two the memory used,
+        at a cost of more complexity.
+        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
+        and https://github.com/DLR-RM/stable-baselines3/pull/28#issuecomment-637559274
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "cpu",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        batch_size: int = 0,
+    ):
+        super(EntReplayBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+
+        # Check that the replay buffer can fit into the memory
+        if psutil is not None:
+            mem_available = psutil.virtual_memory().available
+
+        self.optimize_memory_usage = optimize_memory_usage
+        self.observations = np.zeros((self.buffer_size, *self.obs_shape), dtype=observation_space.dtype)
+        self.n_envs = n_envs
+        
+        if psutil is not None:
+            total_memory_usage = self.observations.nbytes 
+            
+            if total_memory_usage > mem_available:
+                # Convert to GB
+                total_memory_usage /= 1e9
+                mem_available /= 1e9
+                warnings.warn(
+                    "This system does not have apparently enough memory to store the complete "
+                    f"replay buffer {total_memory_usage:.2f}GB > {mem_available:.2f}GB"
+                )
+                
+    def compute_state_entropy(self, obs, k=5):
+        batch_size = 500
+        if self.full:
+            full_obs = th.as_tensor(self.observations, device=self.device)
+        else:
+            full_obs = th.as_tensor(self.observations[:self.pos], device=self.device)
+        obs = th.as_tensor(obs, device=self.device)
+
+        with th.no_grad():
+            dists = []
+            for idx in range(len(full_obs) // batch_size + 1):
+                start = idx * batch_size
+                end = (idx + 1) * batch_size
+                dist = th.norm(
+                    obs[:, None, :] - full_obs[None, start:end, :], dim=-1, p=2
+                )
+                dists.append(dist)
+
+            dists = th.cat(dists, dim=1)
+
+            # Ensure k is within bounds
+            max_k = min(dists.size(1) - 1, k)
+            knn_dists = th.kthvalue(dists, k=max_k + 1, dim=1).values
+
+            state_entropy = knn_dists
+        return state_entropy.unsqueeze(1)
+
+
+    def add_obs(self, obs: np.ndarray) -> None:
+        # Copy to avoid modification by reference
+        obs_size = obs.shape[0]        
+        next_index = self.pos + self.n_envs
+        if next_index >= self.buffer_size:
+            self.full = True
+            maximum_index = self.buffer_size - self.pos
+            self.observations[self.pos:] = np.array(obs[:maximum_index]).copy()
+            remain = self.n_envs - (maximum_index)
+            if remain > 0:
+                self.observations[0:remain] = np.array(obs[maximum_index:]).copy()
+            self.pos = remain
+        else:
+            self.observations[self.pos:next_index] = np.array(obs).copy()
+            self.pos = next_index
+
+            
+    def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+        if self.optimize_memory_usage:
+            next_obs = self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size, 0, :], env)
+        else:
+            next_obs = self._normalize_obs(self.next_observations[batch_inds, 0, :], env)
+
+        data = (
+            self._normalize_obs(self.observations[batch_inds, 0, :], env),
+            self.actions[batch_inds, 0, :],
+            next_obs,
+            self.dones[batch_inds],
+            self._normalize_reward(self.rewards[batch_inds], env),
+        )
+        return ReplayBufferSamples(*tuple(map(self.to_torch, data)))

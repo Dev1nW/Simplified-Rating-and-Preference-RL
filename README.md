@@ -14,6 +14,27 @@ BPref: Benchmarking Preference-Based Reinforcement Learning:
  
  * 💻 Code: [BPref Code](https://github.com/rll-research/BPref)
 
+## ✨ Recent Updates ✨
+
+* **Implemented Entropy Reward for Initial Rollout** 
+* **Adjusted to Use Hyperparameters from [Rating-Based Reinforcement Learning Paper](https://ojs.aaai.org/index.php/AAAI/article/view/28886)**
+* **Simplified Hyperparameter Tuning** for easier experimentation.
+* **Achieved Results Similar to [Rating-Based Reinforcement Learning Paper](https://ojs.aaai.org/index.php/AAAI/article/view/28886)** in a single run.
+* **Can now do any number of rating classes. Want to do 100 rating classes, try it.**
+
+
+## See it for yourself
+
+Videos like this are generated after 4,000,000 timesteps using 1,000 ratings! This only took 30 minutes on Mac M3 Max!
+
+![Demo](Demos/video.gif)
+
+## Experimental Results:
+
+The figure below demonstrates the performance of this implementation on RbRL (2–6 ratings) and PbRL, achieving results similar to those in the original RbRL paper in a single run:
+
+![Results](Demos/results_graph.png)
+
 ## Key Features:
 
 * **Simplified RbRL and PbRL:**  Easy-to-understand implementation of Rating-based and Preference-based RL algorithms.
@@ -23,12 +44,6 @@ BPref: Benchmarking Preference-Based Reinforcement Learning:
 * **Custom Wrappers:** Includes custom wrappers for DeepMind Control Suite to Gymnasium and DeepMind Control Suite Vectorized Environment.
 * **Performance Visualization:** Generates videos showcasing the model's performance after training.
 * **Reward Correlation Analysis:** Calculates the correlation between predicted and actual rewards.
-
-## See it for yourself
-
-Videos like this are generated after 4,000,000 timesteps using 1,000 ratings!
-
-![Demo](Demos/video.gif)
 
 ## Installation:
 
@@ -44,8 +59,8 @@ Videos like this are generated after 4,000,000 timesteps using 1,000 ratings!
    At the top of run_ppo.py, run_pref.py and run_ratings.py you will see:
 
    ```
-   env_name = 'cheetah'
-   task_name = 'run'
+   env_name = 'walker'
+   task_name = 'walk'
    ```
 
    This is the way you can set the environment name like cheetah, walker, quadruped, etc. with the corresponding task like run, walk, etc. 

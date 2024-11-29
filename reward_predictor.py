@@ -13,7 +13,6 @@ def gen_net(in_size=1, out_size=1, H=128, n_layers=3, activation='tanh'):
     for i in range(n_layers):
         net.append(nn.Linear(in_size, H))
         net.append(nn.LeakyReLU())
-        net.append(nn.Dropout(0.15))
         in_size = H
     net.append(nn.Linear(in_size, out_size))
     if activation == 'tanh':
@@ -29,7 +28,7 @@ class RewardModel:
     def __init__(self, ds, da, 
                  ensemble_size=3, lr=0.0001, mb_size = 128, size_segment=1, 
                  env_maker=None, max_size=100, activation='tanh', capacity=5e5,
-                 teacher_num_ratings=2): 
+                 teacher_num_ratings=2, max_reward=20, k=30): 
         self.ds = ds
         self.da = da
         self.de = ensemble_size
@@ -62,7 +61,15 @@ class RewardModel:
         self.best_seg = []
         self.best_label = []
         self.best_action = []
-        self.num_ratings = teacher_num_ratings
+
+        if teacher_num_ratings >= 2:
+            self.num_ratings = teacher_num_ratings
+        else:
+            print('Invalid number of rating classes given, defaulting to 2...')
+            self.num_ratings = 2
+
+        self.max_reward = max_reward
+        self.k = k
 
         self.num_timesteps = 0
         self.member_1_pred_reward = []
@@ -79,7 +86,7 @@ class RewardModel:
     def construct_ensemble(self):
         for i in range(self.de):
             model = nn.Sequential(*gen_net(in_size=self.ds+self.da, 
-                                           out_size=1, H=256, n_layers=2, 
+                                           out_size=1, H=256, n_layers=3, 
                                            activation=self.activation)).float().to(device)
             self.ensemble.append(model)
             self.paramlst.extend(model.parameters())
@@ -212,7 +219,6 @@ class RewardModel:
     def get_label(self, sa_t_1, r_t_1):
         sum_r_t_1 = np.sum(r_t_1, axis=1)
         
-
         seg_size = r_t_1.shape[1]
         temp_r_t_1 = r_t_1.copy()
         temp_r_t_1 = np.sum(temp_r_t_1, axis=1)
@@ -220,35 +226,11 @@ class RewardModel:
 
         rewards = np.sum(r_t_1, axis=1)
 
-        max_reward = 12
+        limit = self.max_reward / self.num_ratings
 
-        limit = max_reward / self.num_ratings
+        for i in range(self.num_ratings):
+            sum_r_t_1[(temp_r_t_1 >= limit*i) & (temp_r_t_1 < limit*(i+1))] = i
 
-        if self.num_ratings == 2:
-            sum_r_t_1[(temp_r_t_1 < limit)] = 0
-            sum_r_t_1[(temp_r_t_1 >= limit)] = 1
-        elif self.num_ratings == 3:
-            sum_r_t_1[(temp_r_t_1 < limit)] = 0
-            sum_r_t_1[(temp_r_t_1 >= limit) & (temp_r_t_1 < limit*2)] = 1
-            sum_r_t_1[(temp_r_t_1 >= limit*2)] = 2
-        elif self.num_ratings == 4:
-            sum_r_t_1[(temp_r_t_1 < limit)] = 0
-            sum_r_t_1[(temp_r_t_1 >= limit) & (temp_r_t_1 < limit*2)] = 1
-            sum_r_t_1[(temp_r_t_1 >= limit*2) & (temp_r_t_1 < limit*3)] = 2
-            sum_r_t_1[(temp_r_t_1 >= limit*2)] = 3
-        elif self.num_ratings == 5:
-            sum_r_t_1[(temp_r_t_1 < limit)] = 0
-            sum_r_t_1[(temp_r_t_1 >= limit) & (temp_r_t_1 < limit*2)] = 1
-            sum_r_t_1[(temp_r_t_1 >= limit*2) & (temp_r_t_1 < limit*3)] = 2
-            sum_r_t_1[(temp_r_t_1 >= limit*3) & (temp_r_t_1 < limit*4)] = 3
-            sum_r_t_1[(temp_r_t_1 >= limit*4)] = 4
-        else:
-            sum_r_t_1[temp_r_t_1 < limit] = 0
-            sum_r_t_1[(temp_r_t_1 >= limit) & (temp_r_t_1 < limit*2)] = 1
-            sum_r_t_1[(temp_r_t_1 >= limit*2) & (temp_r_t_1 < limit*3)] = 2
-            sum_r_t_1[(temp_r_t_1 >= limit*3) & (temp_r_t_1 < limit*4)] = 3
-            sum_r_t_1[(temp_r_t_1 >= limit*4) & (temp_r_t_1 < limit*5)] = 4
-            sum_r_t_1[(temp_r_t_1 >= limit*5)] = 5
         labels = sum_r_t_1
         
         return sa_t_1, r_t_1, labels
@@ -311,322 +293,57 @@ class RewardModel:
                 sa_t_1 = self.buffer_seg1[idxs]
                 labels = self.buffer_label[idxs]
 
-
-                if self.num_ratings == 2:
-                    num_B = 0
-                    num_G = 0
-
-                    for label in labels:
-                        
-                        if label == 0:
-                            num_B += 1
-                        elif label == 1:
-                            num_G += 1
-
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=2)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    
-                    upper_bound_B = np_pred[num_B-1]
-                    upper_bound_G = np_pred[num_B+num_G-1]
-
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-
-                    k=70
-                    
-                    Q_0 = -(pred-0)*(pred-upper_bound_B)*(k)
-                    Q_1 = -(pred-upper_bound_B)*(pred-1)*(k)
-                    
-                    our_Q = torch.cat([Q_0, Q_1], axis=-1)
-                    
-                    curr_loss = self.CEloss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
+                num_ratings = [0]*self.num_ratings
+                for label in labels:
+                    num_ratings[int(label[0])] += 1
                 
-                elif self.num_ratings == 3:
-                    num_B = 0
-                    num_N = 0
-                    num_G = 0
+                num_ratings_in_class = []
 
-                    for label in labels:
-                        
-                        if label == 0:
-                            num_B += 1
-                        elif label == 1:
-                            num_N += 1
-                        elif label == 2:
-                            num_G += 1
+                labels = torch.from_numpy(labels.flatten()).long().to(device)
 
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=3)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    
-                    upper_bound_B = np_pred[num_B-1]
-                    upper_bound_N = np_pred[num_B+num_N-1]
-                    upper_bound_G = np_pred[num_B+num_N+num_G-1]
+                target_onehot = F.one_hot(labels, num_classes=self.num_ratings)
 
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_N = torch.as_tensor(upper_bound_N).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
+                if member == 0:
+                    total += labels.size(0)
 
-                    k=70
-                    
-                    Q_0 = -(pred-0)*(pred-upper_bound_B)*(k)
-                    Q_1 = -(pred-upper_bound_B)*(pred-upper_bound_N)*(k)
-                    Q_2 = -(pred-upper_bound_N)*(pred-1)*(k)
-                    
+                # get logits
+                r_hat1 = self.r_hat_member(sa_t_1, member=member)
+                r_hat1 = r_hat1.sum(axis=1)
+                r_hat = r_hat1
 
-                    our_Q = torch.cat([Q_0, Q_1, Q_2], axis=-1)
+                pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
                     
-                    curr_loss = self.CEloss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
+                sorted_indices = pred[:, 0].sort()[1]
+                np_pred = pred[sorted_indices]
+                np_pred = np_pred.tolist()
+
+                # bounds calculations
+                bounds = [torch.as_tensor([0]).to(device)] * (self.num_ratings + 1)
+                for i in range(len(num_ratings)):
+                    # Regular
+                    bounds[i+1] = torch.as_tensor(np_pred[sum(num_ratings[0:i+1])-1]).to(device)
+
+                Q = [None] * self.num_ratings
                 
-                elif self.num_ratings == 4:
-                    num_VB = 0
-                    num_B = 0
-                    num_G = 0
-                    num_VG = 0
+                for i in range(len(bounds)-1):
+                    Q[i] = -(self.k)*(pred-bounds[i])*(pred-bounds[i+1])
 
-                    for label in labels:
-                        if label == 0:
-                            num_VB += 1
-                        elif label == 1:
-                            num_B += 1
-                        elif label == 2:
-                            num_G += 1
-                        elif label == 3:
-                            num_VG += 1
+                our_Q = torch.cat(Q, axis=-1)
+                curr_loss = self.CEloss(our_Q, target_onehot)
+                loss += curr_loss
+                ensemble_losses[member].append(curr_loss.item())
+                    
+                # compute acc
+                _, predicted = torch.max(our_Q, 1)
+                correct = (predicted == labels).sum().item()
+                ensemble_acc[member] += correct
 
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=4)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    upper_bound_VB = np_pred[num_VB-1]
-                    upper_bound_B = np_pred[num_VB+num_B-1]
-                    upper_bound_G = np_pred[num_VB+num_B+num_G-1]
-                    upper_bound_VG = np_pred[num_VB+num_B+num_G+num_VG-1]
-
-                    upper_bound_VB = torch.as_tensor(upper_bound_VB).to(device)
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-                    upper_bound_VG = torch.as_tensor(upper_bound_VG).to(device)
-
-                    k=70
-                    Q_0 = -(pred-0)*(pred-upper_bound_VB)*(k)
-                    Q_1 = -(pred-upper_bound_VB)*(pred-upper_bound_B)*(k)
-                    Q_2 = -(pred-upper_bound_B)*(pred-upper_bound_G)*(k)
-                    Q_3 = -(pred-upper_bound_G)*(pred-1)*(k)
-
-                    our_Q = torch.cat([Q_0, Q_1, Q_2, Q_3], axis=-1)
-                    
-                    curr_loss = self.CEloss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
-
-                elif self.num_ratings == 5:
-                    num_VB = 0
-                    num_B = 0
-                    num_N = 0
-                    num_G = 0
-                    num_VG = 0
-
-                    for label in labels:
-                        if label == 0:
-                            num_VB += 1
-                        elif label == 1:
-                            num_B += 1
-                        elif label == 2:
-                            num_N += 1
-                        elif label == 3:
-                            num_G += 1
-                        elif label == 4:
-                            num_VG += 1
-
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=5)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    upper_bound_VB = np_pred[num_VB-1]
-                    upper_bound_B = np_pred[num_VB+num_B-1]
-                    upper_bound_N = np_pred[num_VB+num_B+num_N-1]
-                    upper_bound_G = np_pred[num_VB+num_B+num_N+num_G-1]
-                    upper_bound_VG = np_pred[num_VB+num_B+num_N+num_G+num_VG-1]
-
-                    upper_bound_VB = torch.as_tensor(upper_bound_VB).to(device)
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_N = torch.as_tensor(upper_bound_N).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-                    upper_bound_VG = torch.as_tensor(upper_bound_VG).to(device)
-
-                    k=70
-                    Q_0 = -(pred-0)*(pred-upper_bound_VB)*(k)
-                    Q_1 = -(pred-upper_bound_VB)*(pred-upper_bound_B)*(k)
-                    Q_2 = -(pred-upper_bound_B)*(pred-upper_bound_N)*(k)
-                    Q_3 = -(pred-upper_bound_N)*(pred-upper_bound_G)*(k)
-                    Q_4 = -(pred-upper_bound_G)*(pred-1)*(k)
-
-                    our_Q = torch.cat([Q_0, Q_1, Q_2, Q_3, Q_4], axis=-1)
-                    
-                    curr_loss = self.CEloss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
-                
-                elif self.num_ratings == 6:
-                    num_VB = 0
-                    num_B = 0
-                    num_N = 0
-                    num_G = 0
-                    num_VG = 0
-                    num_P = 0
-
-                    for label in labels:
-                        if label == 0:
-                            num_VB += 1
-                        elif label == 1:
-                            num_B += 1
-                        elif label == 2:
-                            num_N += 1
-                        elif label == 3:
-                            num_G += 1
-                        elif label == 4:
-                            num_VG += 1
-                        elif label == 5:
-                            num_P += 1
-
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=6)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    upper_bound_VB = np_pred[num_VB-1]
-                    upper_bound_B = np_pred[num_VB+num_B-1]
-                    upper_bound_N = np_pred[num_VB+num_B+num_N-1]
-                    upper_bound_G = np_pred[num_VB+num_B+num_N+num_G-1]
-                    upper_bound_VG = np_pred[num_VB+num_B+num_N+num_G+num_VG-1]
-                    upper_bound_P = np_pred[num_VB+num_B+num_N+num_G+num_VG+num_P-1]
-
-                    upper_bound_VB = torch.as_tensor(upper_bound_VB).to(device)
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_N = torch.as_tensor(upper_bound_N).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-                    upper_bound_VG = torch.as_tensor(upper_bound_VG).to(device)
-                    upper_bound_P = torch.as_tensor(upper_bound_P).to(device)
-
-                    k=70
-                    Q_0 = -(pred-0)*(pred-upper_bound_VB)*(k)
-                    Q_1 = -(pred-upper_bound_VB)*(pred-upper_bound_B)*(k)
-                    Q_2 = -(pred-upper_bound_B)*(pred-upper_bound_N)*(k)
-                    Q_3 = -(pred-upper_bound_N)*(pred-upper_bound_G)*(k)
-                    Q_4 = -(pred-upper_bound_G)*(pred-upper_bound_VG)*(k)
-                    Q_5 = -(pred-upper_bound_VG) * (pred-1)*(k)
-
-                    our_Q = torch.cat([Q_0, Q_1, Q_2, Q_3, Q_4, Q_5], axis=-1)
-                    
-                    curr_loss = self.CEloss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
-
-                
             loss.backward()
             self.opt.step()
 
         ensemble_acc = ensemble_acc / total
         
         return ensemble_acc
-
     
     def train_soft_reward(self):
         ensemble_losses = [[] for _ in range(self.de)]
@@ -654,315 +371,51 @@ class RewardModel:
                 sa_t_1 = self.buffer_seg1[idxs]
                 labels = self.buffer_label[idxs]
 
-                if self.num_ratings == 2:
-                    num_B = 0
-                    num_G = 0
-
-                    for label in labels:
-                        
-                        if label == 0:
-                            num_B += 1
-                        elif label == 1:
-                            num_G += 1
-
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=2)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    
-                    upper_bound_B = np_pred[num_B-1]
-                    upper_bound_G = np_pred[num_B+num_G-1]
-
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-
-                    k=70
-                    
-                    Q_0 = -(pred-0)*(pred-upper_bound_B)*(k)
-                    Q_1 = -(pred-upper_bound_B)*(pred-1)*(k)
-                    
-
-                    our_Q = torch.cat([Q_0, Q_1], axis=-1)
-                    
-                    curr_loss = self.softXEnt_loss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
+                num_ratings = [0]*self.num_ratings
+                for label in labels:
+                    num_ratings[int(label[0])] += 1
                 
-                elif self.num_ratings == 3:
-                    num_B = 0
-                    num_N = 0
-                    num_G = 0
+                num_ratings_in_class = []
 
-                    for label in labels:
-                        
-                        if label == 0:
-                            num_B += 1
-                        elif label == 1:
-                            num_N += 1
-                        elif label == 2:
-                            num_G += 1
+                labels = torch.from_numpy(labels.flatten()).long().to(device)
 
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=3)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    
-                    upper_bound_B = np_pred[num_B-1]
-                    upper_bound_N = np_pred[num_B+num_N-1]
-                    upper_bound_G = np_pred[num_B+num_N+num_G-1]
+                target_onehot = F.one_hot(labels, num_classes=self.num_ratings)
 
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_N = torch.as_tensor(upper_bound_N).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
+                if member == 0:
+                    total += labels.size(0)
 
-                    k=70
-                    
-                    Q_0 = -(pred-0)*(pred-upper_bound_B)*(k)
-                    Q_1 = -(pred-upper_bound_B)*(pred-upper_bound_N)*(k)
-                    Q_2 = -(pred-upper_bound_N)*(pred-1)*(k)
-                    
+                # get logits
+                r_hat1 = self.r_hat_member(sa_t_1, member=member)
+                r_hat1 = r_hat1.sum(axis=1)
+                r_hat = r_hat1
 
-                    our_Q = torch.cat([Q_0, Q_1, Q_2], axis=-1)
+                pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
                     
-                    curr_loss = self.softXEnt_loss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
+                sorted_indices = pred[:, 0].sort()[1]
+                np_pred = pred[sorted_indices]
+                np_pred = np_pred.tolist()
+
+                # bounds calculations
+                bounds = [torch.as_tensor([0]).to(device)] * (self.num_ratings + 1)
+                for i in range(len(num_ratings)):
+                    # Regular
+                    bounds[i+1] = torch.as_tensor(np_pred[sum(num_ratings[0:i+1])-1]).to(device)
+
+                Q = [None] * self.num_ratings
+                for i in range(len(bounds)-1):
+                    Q[i] = -(self.k)*(pred-bounds[i])*(pred-bounds[i+1])
+
+                our_Q = torch.cat(Q, axis=-1)
                 
-                elif self.num_ratings == 4:
-                    num_VB = 0
-                    num_B = 0
-                    num_G = 0
-                    num_VG = 0
-
-                    for label in labels:
-                        if label == 0:
-                            num_VB += 1
-                        elif label == 1:
-                            num_B += 1
-                        elif label == 2:
-                            num_G += 1
-                        elif label == 3:
-                            num_VG += 1
-
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=4)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    upper_bound_VB = np_pred[num_VB-1]
-                    upper_bound_B = np_pred[num_VB+num_B-1]
-                    upper_bound_G = np_pred[num_VB+num_B+num_G-1]
-                    upper_bound_VG = np_pred[num_VB+num_B+num_G+num_VG-1]
-
-                    upper_bound_VB = torch.as_tensor(upper_bound_VB).to(device)
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-                    upper_bound_VG = torch.as_tensor(upper_bound_VG).to(device)
-
-                    k=70
-                    Q_0 = -(pred-0)*(pred-upper_bound_VB)*(k)
-                    Q_1 = -(pred-upper_bound_VB)*(pred-upper_bound_B)*(k)
-                    Q_2 = -(pred-upper_bound_B)*(pred-upper_bound_G)*(k)
-                    Q_3 = -(pred-upper_bound_G)*(pred-1)*(k)
-
-                    our_Q = torch.cat([Q_0, Q_1, Q_2, Q_3], axis=-1)
-                    
-                    curr_loss = self.softXEnt_loss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
-
-                elif self.num_ratings == 5:
-                    num_VB = 0
-                    num_B = 0
-                    num_N = 0
-                    num_G = 0
-                    num_VG = 0
-
-                    for label in labels:
-                        if label == 0:
-                            num_VB += 1
-                        elif label == 1:
-                            num_B += 1
-                        elif label == 2:
-                            num_N += 1
-                        elif label == 3:
-                            num_G += 1
-                        elif label == 4:
-                            num_VG += 1
-
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=5)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    upper_bound_VB = np_pred[num_VB-1]
-                    upper_bound_B = np_pred[num_VB+num_B-1]
-                    upper_bound_N = np_pred[num_VB+num_B+num_N-1]
-                    upper_bound_G = np_pred[num_VB+num_B+num_N+num_G-1]
-                    upper_bound_VG = np_pred[num_VB+num_B+num_N+num_G+num_VG-1]
-
-                    upper_bound_VB = torch.as_tensor(upper_bound_VB).to(device)
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_N = torch.as_tensor(upper_bound_N).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-                    upper_bound_VG = torch.as_tensor(upper_bound_VG).to(device)
-
-                    k=70
-                    Q_0 = -(pred-0)*(pred-upper_bound_VB)*(k)
-                    Q_1 = -(pred-upper_bound_VB)*(pred-upper_bound_B)*(k)
-                    Q_2 = -(pred-upper_bound_B)*(pred-upper_bound_N)*(k)
-                    Q_3 = -(pred-upper_bound_N)*(pred-upper_bound_G)*(k)
-                    Q_4 = -(pred-upper_bound_G)*(pred-1)*(k)
-
-                    our_Q = torch.cat([Q_0, Q_1, Q_2, Q_3, Q_4], axis=-1)
-                    
-                    curr_loss = self.softXEnt_loss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
+                curr_loss = self.softXEnt_loss(our_Q, target_onehot)
+                loss += curr_loss
+                ensemble_losses[member].append(curr_loss.item())
                 
-                elif self.num_ratings == 6:
-                    num_VB = 0
-                    num_B = 0
-                    num_N = 0
-                    num_G = 0
-                    num_VG = 0
-                    num_P = 0
+                # compute acc
+                _, predicted = torch.max(our_Q, 1)
+                correct = (predicted == labels).sum().item()
+                ensemble_acc[member] += correct
 
-                    for label in labels:
-                        if label == 0:
-                            num_VB += 1
-                        elif label == 1:
-                            num_B += 1
-                        elif label == 2:
-                            num_N += 1
-                        elif label == 3:
-                            num_G += 1
-                        elif label == 4:
-                            num_VG += 1
-                        elif label == 5:
-                            num_P += 1
-
-                    labels = torch.from_numpy(labels.flatten()).long().to(device)
-                    target_onehot = F.one_hot(labels, num_classes=6)
-                    
-                    if member == 0:
-                        total += labels.size(0)
-                    
-                    # get logits
-                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat = r_hat1
-                    
-                    pred  = ((r_hat) - (torch.min(r_hat)))/((torch.max(r_hat)) - (torch.min(r_hat)))
-                    
-                    sorted_indices = pred[:, 0].sort()[1]
-                    np_pred = pred[sorted_indices]
-                    np_pred = np_pred.tolist()
-                    
-                    upper_bound_VB = np_pred[num_VB-1]
-                    upper_bound_B = np_pred[num_VB+num_B-1]
-                    upper_bound_N = np_pred[num_VB+num_B+num_N-1]
-                    upper_bound_G = np_pred[num_VB+num_B+num_N+num_G-1]
-                    upper_bound_VG = np_pred[num_VB+num_B+num_N+num_G+num_VG-1]
-                    upper_bound_P = np_pred[num_VB+num_B+num_N+num_G+num_VG+num_P-1]
-
-                    upper_bound_VB = torch.as_tensor(upper_bound_VB).to(device)
-                    upper_bound_B = torch.as_tensor(upper_bound_B).to(device)
-                    upper_bound_N = torch.as_tensor(upper_bound_N).to(device)
-                    upper_bound_G = torch.as_tensor(upper_bound_G).to(device)
-                    upper_bound_VG = torch.as_tensor(upper_bound_VG).to(device)
-                    upper_bound_P = torch.as_tensor(upper_bound_P).to(device)
-
-                    k=70
-                    Q_0 = -(pred-0)*(pred-upper_bound_VB)*(k)
-                    Q_1 = -(pred-upper_bound_VB)*(pred-upper_bound_B)*(k)
-                    Q_2 = -(pred-upper_bound_B)*(pred-upper_bound_N)*(k)
-                    Q_3 = -(pred-upper_bound_N)*(pred-upper_bound_G)*(k)
-                    Q_4 = -(pred-upper_bound_G)*(pred-upper_bound_VG)*(k)
-                    Q_5 = -(pred-upper_bound_VG) * (pred-1)*(k)
-
-                    our_Q = torch.cat([Q_0, Q_1, Q_2, Q_3, Q_4, Q_5], axis=-1)
-                    
-                    curr_loss = self.softXEnt_loss(our_Q, target_onehot)
-                    loss += curr_loss
-                    ensemble_losses[member].append(curr_loss.item())
-                    
-                    # compute acc
-                    _, predicted = torch.max(our_Q, 1)
-                    correct = (predicted == labels).sum().item()
-                    ensemble_acc[member] += correct
-
-                
             loss.backward()
             self.opt.step()
         
