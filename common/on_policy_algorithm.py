@@ -454,6 +454,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             
             pred_reward = norm_state_entropy.reshape(-1).data.cpu().numpy()
 
+            self.predicted_reward_list.append(pred_reward)
+            self.real_reward_list.append(rewards)
+
             # Create list of all state action pairs within a trajectory 
             if self.traj_obsact is None:
                 self.traj_obsact = obsact
@@ -470,6 +473,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if num_dones > 0:
                 self.reward_model.add_data_batch(self.traj_obsact, self.traj_reward)
                 
+                flat_list1 = np.array([item for sublist in self.real_reward_list for item in sublist])
+                flat_list2 = np.array([item for sublist in  self.predicted_reward_list for item in sublist])
+
+                self.predicted_reward_list = []
+                self.real_reward_list = []  
+                self.correlation_reward = np.corrcoef(flat_list1, flat_list2,rowvar=False)
+
                 # Reset trajectories
                 self.traj_obsact, self.traj_reward, self.traj_frames_1, self.traj_frames_2 = None, None, [], []
 
