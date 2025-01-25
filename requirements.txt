@@ -10,3 +10,4 @@ imageio==2.36.0
 numpy==1.23
 imageio[ffmpeg] 
 tensorboard==2.18.0
+mujoco==3.2.5
