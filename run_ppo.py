@@ -65,7 +65,6 @@ for seed in seeds:
 
     model = PPO("MlpPolicy", env, learning_rate=lr, seed=seed, batch_size=policy_batch, ent_coef=ent_coef, policy_kwargs=policy_kwargs, gae_lambda=gae_lambda, clip_range=clip_range, verbose=1, tensorboard_log="./tests/" + env_name + "_" + task_name + "_ppo_seed_" +str(seed) + "/")
 
-    model = PPO("MlpPolicy", env, verbose=1, tensorboard_log="./tests/" + env_name + "_" + task_name + "_ppo_seed_" +str(seed) + "/")
     model.learn(total_timesteps=4_000_000)
     model.save("./tests/" + env_name + "_" + task_name + "_ppo_seed_" +str(seed) + "/")
 
