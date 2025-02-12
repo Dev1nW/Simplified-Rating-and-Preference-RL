@@ -254,16 +254,9 @@ class VecEnv(ABC):
             # call the render method of the environments
             images = self.get_images()
             # Create a big image by tiling images from subprocesses
-            bigimg = tile_images(images)  # type: ignore[arg-type]
+            #bigimg = tile_images(images)  # type: ignore[arg-type]
 
-            if mode == "human":
-                # Display it using OpenCV
-                import cv2
-
-                cv2.imshow("vecenv", bigimg[:, :, ::-1])
-                cv2.waitKey(1)
-            else:
-                return bigimg
+            return images
 
         else:
             # Other render modes:

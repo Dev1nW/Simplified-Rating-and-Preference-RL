@@ -60,27 +60,30 @@ def make(
         )
     return gym.make(env_id)
 
-def _spec_to_box(spec):
+def _spec_to_box(spec, dtype):
     def extract_min_max(s):
         assert s.dtype == np.float64 or s.dtype == np.float32
-        dim = np.int64(np.prod(s.shape))
-        if type(s) == specs.Array:
+        dim = int(np.prod(s.shape))
+        if isinstance(s, specs.Array):
             # Default bound for unbounded action space
-            bound = np.inf * np.ones(dim, dtype=np.float32)  # Assuming default bounds of -1 to 1
+            bound = 1.0 * np.ones(dim, dtype=np.float32)  # Assuming default bounds of -1 to 1
             return -bound, bound
-        elif type(s) == specs.BoundedArray:
+        elif isinstance(s, specs.BoundedArray):
             zeros = np.zeros(dim, dtype=np.float32)
-            return s.minimum + zeros, s.maximum + zeros
+            minimum = np.where(np.isfinite(s.minimum), s.minimum, -1.0)  # Replace -inf with -1.0
+            maximum = np.where(np.isfinite(s.maximum), s.maximum, 1.0)    # Replace inf with 1.0
+            return minimum + zeros, maximum + zeros
 
     mins, maxs = [], []
     for s in spec:
         mn, mx = extract_min_max(s)
         mins.append(mn)
         maxs.append(mx)
-    low = np.concatenate(mins, axis=0)
-    high = np.concatenate(maxs, axis=0)
+    low = np.concatenate(mins, axis=0).astype(dtype)
+    high = np.concatenate(maxs, axis=0).astype(dtype)
     assert low.shape == high.shape
-    return spaces.Box(low, high, dtype=np.float32)
+    return spaces.Box(low, high, dtype=dtype)
+
 
 def _flatten_obs(obs):
     obs_pieces = []
@@ -102,8 +105,22 @@ class DMCWrapper(core.Env):
         camera_id=0,
         frame_skip=1,
         environment_kwargs=None,
-        channels_first=True
+        channels_first=True, 
+        render_mode=None
     ):
+        
+        self.render_mode = render_mode
+        
+        self.metadata = {
+        "render_modes": ["human", "rgb_array"],
+        "render_fps": 50,
+        }
+        
+        if render_mode and render_mode not in self.metadata['render_modes']:
+            raise ValueError(f"Unsupported render mode: {render_mode}")
+
+        self.render_mode = 'rgb_array'
+
         assert 'random' in task_kwargs, 'please specify a seed, for deterministic behaviour'
         self._from_pixels = from_pixels
         self._height = height
@@ -122,31 +139,31 @@ class DMCWrapper(core.Env):
         )
 
         # True and normalized action spaces
-        self._true_action_space = _spec_to_box([self._env.action_spec()])
+        self._true_action_space = _spec_to_box([self._env.action_spec()], np.float32)
         self._norm_action_space = spaces.Box(
             low=-1.0,
             high=1.0,
             shape=self._true_action_space.shape,
             dtype=np.float32
         )
-        
+        self.action_space = self._norm_action_space  # Set the action space
+
         # Create observation space
         if from_pixels:
             shape = [3, height, width] if channels_first else [height, width, 3]
-            self._observation_space = spaces.Box(
+            self.observation_space = spaces.Box(
                 low=0, high=255, shape=shape, dtype=np.uint8
             )
         else:
-            self._observation_space = _spec_to_box(
-                self._env.observation_spec().values()
+            self.observation_space = _spec_to_box(
+                self._env.observation_spec().values(),
+                np.float64
             )
         self._state_space = _spec_to_box(
-            self._env.observation_spec().values()
+            self._env.observation_spec().values(),
+            np.float64
         )
         self.current_state = None
-
-        # set seed
-        self.seed(seed=task_kwargs.get('random', 1))
 
     def __getattr__(self, name):
         return getattr(self._env, name)
@@ -169,29 +186,15 @@ class DMCWrapper(core.Env):
         true_delta = self._true_action_space.high - self._true_action_space.low
         norm_delta = self._norm_action_space.high - self._norm_action_space.low
         
+        # Ensure no infinite deltas
+        true_delta = np.where(np.isfinite(true_delta), true_delta, 1.0)
+        norm_delta = np.where(np.isfinite(norm_delta), norm_delta, 1.0)
+        
         action = (action - self._norm_action_space.low) / norm_delta
         action = action * true_delta + self._true_action_space.low
         action = action.astype(np.float32)
         
         return action
-    
-    @property
-    def observation_space(self):
-        return self._observation_space
-
-    @property
-    def state_space(self):
-        return self._state_space
-
-    @property
-    def action_space(self):
-        return self._norm_action_space
-    
-    def seed(self, seed):
-        self._true_action_space.seed(seed)
-        self._norm_action_space.seed(seed)
-        self._observation_space.seed(seed)
-
 
     def step(self, action):
         assert self._norm_action_space.contains(action)
@@ -218,6 +221,8 @@ class DMCWrapper(core.Env):
     def reset(self, *, seed=None, options=None):
         # Handle the seed by setting it in the environment reset
         time_step = self._env.reset()
+        if seed is not None:
+            np.random.seed(seed)
         self.current_state = _flatten_obs(time_step.observation)
         obs = self._get_obs(time_step)
         return obs, {}
@@ -236,15 +241,12 @@ if __name__ == '__main__':
 
     done = False
     obs = env.reset()
-    total_reward = 0
     while not done:
         action = env.action_space.sample()
         obs, reward, done, info, _ = env.step(action)
         # Render the environment and display it using matplotlib
-        #img = env.render()
-        #plt.imshow(img)
-        #plt.axis('off')  # Hide axis
-        #plt.show()  # Display the image
-        total_reward += reward
-    print('Total Reward: ', total_reward)
+        img = env.render()
+        plt.imshow(img)
+        plt.axis('off')  # Hide axis
+        plt.show()  # Display the image
         

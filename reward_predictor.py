@@ -226,10 +226,15 @@ class RewardModel:
 
         rewards = np.sum(r_t_1, axis=1)
 
-        limit = self.max_reward / self.num_ratings
-
+        interval = self.max_reward/self.num_ratings
         for i in range(self.num_ratings):
-            sum_r_t_1[(temp_r_t_1 >= limit*i) & (temp_r_t_1 < limit*(i+1))] = i
+            print(str(interval*(i+1)) + "> " + str(i) + " >=" + str(interval*(i)))
+            if(i == 0):
+                sum_r_t_1[(temp_r_t_1 < interval*(i+1))] = i
+            if(i == self.num_ratings-1):
+                sum_r_t_1[(temp_r_t_1 >= interval*(i))] = i
+            else:
+                sum_r_t_1[(temp_r_t_1 < interval*(i+1)) & (temp_r_t_1 >= interval*(i))] = i
 
         labels = sum_r_t_1
         
