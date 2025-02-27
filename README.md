@@ -31,9 +31,9 @@ Videos like this are generated after 4,000,000 timesteps using 1,000 ratings! Th
 
 ## Experimental Results:
 
-The figure below demonstrates the performance of this implementation on RbRL (2–6 ratings) and PbRL, achieving results similar to those in the original RbRL paper in a single run:
+The figure below demonstrates the performance of this implementation on RbRL (2–6 ratings), PbRL, and PPO in the Walker environment for 10 runs with standard deviation. Achieving results similar to that of the original [RbRL paper]((https://ojs.aaai.org/index.php/AAAI/article/view/28886)):
 
-![Results](Demos/results_graph.png)
+![Results](Demos/Walker.png)
 
 ## Key Features:
 
