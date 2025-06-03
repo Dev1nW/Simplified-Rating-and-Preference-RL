@@ -16,11 +16,7 @@ BPref: Benchmarking Preference-Based Reinforcement Learning:
 
 ## âœ¨ Recent Updates âœ¨
 
-* **Implemented Entropy Reward for Initial Rollout** 
-* **Adjusted to Use Hyperparameters from [Rating-Based Reinforcement Learning Paper](https://ojs.aaai.org/index.php/AAAI/article/view/28886)**
-* **Simplified Hyperparameter Tuning** for easier experimentation.
-* **Achieved Results Similar to [Rating-Based Reinforcement Learning Paper](https://ojs.aaai.org/index.php/AAAI/article/view/28886)** in a single run.
-* **Can now do any number of rating classes. Want to do 100 rating classes, try it.**
+* **Added Gradio-based Rating interface that automatically stops after the maximum number of ratings is provided.**
 
 
 ## See it for yourself
@@ -37,6 +33,7 @@ The figure below demonstrates the performance of this implementation on RbRL (2â
 
 ## Key Features:
 
+* **Interactive Rating Interface:** Collects feedback directly from a user using Gradio, no need for synthetic labels!
 * **Simplified RbRL and PbRL:**  Easy-to-understand implementation of Rating-based and Preference-based RL algorithms.
 * **Modernized Codebase:** Utilizes the latest versions of `dm_control`, `stable-baselines3`, `gymnasium`, and `mujoco`.
 * **Apple Silicon Compatibility:**  Designed to work seamlessly on Apple Silicon.
@@ -67,7 +64,7 @@ The figure below demonstrates the performance of this implementation on RbRL (2â
 
 ### Rating-Based Reinforcement Learning:
 
-   For ratings you also are given the ability to change the number of rating classes this can be done by changing num_ratings in run_ratings.py, this can be a number from 2 classes to 6 classes in this implementation. 
+   For ratings you also are given the ability to change the number of rating classes this can be done by changing num_ratings in run_ratings.py, this can be a number from 2 classes to n classes in this implementation. 
 
    Once you have initialized the environment you would like, just run this command: 
 
@@ -84,6 +81,12 @@ The figure below demonstrates the performance of this implementation on RbRL (2â
    python run_pref.py
    ```
 
+### Rating-based Reinforcement Learning with Gradio Interface:
+   For ratings you also are given the ability to change the number of rating classes this can be done by changing num_ratings in run_interface.py, this can be a number from 2 classes to n classes in this implementation. 
+
+   ```
+   python run_interface.py
+   ```
 ### PPO:
    Once you have initialized the environment you would like, just run this command: 
 
