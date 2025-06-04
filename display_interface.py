@@ -165,8 +165,8 @@ class UniversalVideoRenderer:
         # Get frame properties
         height, width = frames[0].shape[:2]
         
-        # Initialize video writer with H.264 codec
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')  # Try 'H264' if 'avc1' doesn't work
+        # Replace with mp4v for Ubuntu
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         fps = 30.0  # Fixed FPS for 2-second video
         out = cv2.VideoWriter(temp_path, fourcc, fps, (width, height))
         
