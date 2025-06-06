@@ -231,16 +231,14 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self) -> None:
             
         
-        self.total_feedback += self.reward_model.mb_size
+        self.total_feedback += self.reward_model.feedback_count
         self.labeled_feedback = self.reward_model.feedback_count
 
-        if self.labeled_feedback % self.reward_model.needed_feedback:
-            pass
-        elif self.old_labeled_feedback == self.labeled_feedback:
-            pass
-        else:
+        if self.labeled_feedback - self.old_labeled_feedback >= self.reward_model.needed_feedback:
             self.old_labeled_feedback = self.labeled_feedback
             self.train_flag = True
+        else:
+            pass
                     
         # update reward
         if self.train_flag:
@@ -253,7 +251,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 if total_acc > 0.97:
                     print("Reward function is updated!! ACC: " + str(total_acc))
                     break;
-                elif epoch == self.re_update:
+                elif epoch == self.re_update-1:
                     print("Reward function is updated!! ACC: " + str(total_acc))
             
     def collect_rollouts(
